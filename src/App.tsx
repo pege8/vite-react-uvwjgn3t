@@ -12,6 +12,9 @@ const SERVICOS = [
   "Marcenaria",
   "Esquadrias",
   "Terrasse",
+  "Gesso",
+  "Drywall",
+  "Outros",
 ] as const;
 
 const STATUS = ["Pendente", "Em andamento", "Concluída"] as const;
