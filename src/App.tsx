@@ -1,375 +1,361 @@
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { supabase } from "./supabaseClient";
+import "./styles.css";
 
-/* ========= SUPABASE ========= */
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL as string,
-  import.meta.env.VITE_SUPABASE_ANON_KEY as string
-);
+const TABLE_NAME = "verificacoes";
 
-type Status = "Pendente" | "OK" | "Red";
+const SERVICOS = [
+  "Hidráulica",
+  "Elétrica",
+  "Revestimento",
+  "Pintura",
+  "Portas",
+  "Gesso",
+  "Drywall",
+  "Marcenaria",
+  "Esquadrias",
+  "Terrasse",
+  "Outros",
+] as const;
 
-type Registro = {
+const STATUS = ["Pendente", "Concluído"] as const;
+
+type Verificacao = {
   id: number;
+  created_at: string;
+  obra: string | null;
+  pavimento: string | null;
+  apartamento: string | null;
+  local: string | null;
+  mao_obra: string | null;
+  servico: string | null;
+  status: string | null;
+};
+
+type FormState = {
   obra: string;
   pavimento: string;
   apartamento: string;
   local: string;
-  mao_de_obra: string;
-  status: Status;
-  foto_url?: string | null;
+  mao_obra: string;
+  servico: string;
+  status: string;
 };
 
+const FORM_VAZIO: FormState = {
+  obra: "",
+  pavimento: "",
+  apartamento: "",
+  local: "",
+  mao_obra: "",
+  servico: "",
+  status: "Pendente",
+};
+
+function friendlyError(msg: string) {
+  const m = (msg || "").toLowerCase();
+  if (m.includes("failed to fetch")) return "Sem conexão com o servidor. Tenta recarregar.";
+  if (m.includes("jwt")) return "Sessão/permiteções: verifica as políticas (RLS) do Supabase.";
+  return msg;
+}
+
 export default function App() {
-  const [obra, setObra] = useState("");
-  const [pavimento, setPavimento] = useState("");
-  const [apartamento, setApartamento] = useState("");
-  const [local, setLocal] = useState("");
-  const [maoDeObra, setMaoDeObra] = useState("");
-  const [status, setStatus] = useState<Status>("Pendente");
-
-  const [foto, setFoto] = useState<File | null>(null);
-  const [registros, setRegistros] = useState<Registro[]>([]);
+  const [lista, setLista] = useState<Verificacao[]>([]);
   const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
 
-  const previewUrl = useMemo(() => {
-    if (!foto) return "";
-    return URL.createObjectURL(foto);
-  }, [foto]);
+  const [servicoFiltro, setServicoFiltro] = useState<string>("Todos");
 
-  useEffect(() => {
-    return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    };
-  }, [previewUrl]);
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [form, setForm] = useState<FormState>(FORM_VAZIO);
+  const [salvando, setSalvando] = useState(false);
 
   async function carregar() {
-    const { data } = await supabase
-      .from("registros")
-      .select("*")
-      .order("id", { ascending: false });
+    setLoading(true);
+    setErro(null);
 
-    setRegistros((data as Registro[]) || []);
+    const { data, error } = await supabase
+      .from(TABLE_NAME)
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setErro(friendlyError(error.message));
+      setLista([]);
+    } else {
+      setLista((data as Verificacao[]) ?? []);
+    }
+
+    setLoading(false);
   }
 
   useEffect(() => {
     carregar();
   }, []);
 
-  function badgeClass(s: Status) {
-    if (s === "Pendente") return "badge pendente";
-    if (s === "OK") return "badge ok";
-    return "badge red";
+  const listaFiltrada = useMemo(() => {
+    if (servicoFiltro === "Todos") return lista;
+    return lista.filter((v) => (v.servico ?? "") === servicoFiltro);
+  }, [lista, servicoFiltro]);
+
+  function abrirNovo() {
+    setErro(null); // ✅ limpa o erro antes de abrir
+    setEditId(null);
+    setForm(FORM_VAZIO);
+    setShowForm(true);
   }
 
-  async function uploadFotoSeTiver(): Promise<string | null> {
-    if (!foto) return null;
+  function abrirEditar(v: Verificacao) {
+    setErro(null); // ✅ limpa o erro antes de abrir
+    setEditId(v.id);
+    setForm({
+      obra: v.obra ?? "",
+      pavimento: v.pavimento ?? "",
+      apartamento: v.apartamento ?? "",
+      local: v.local ?? "",
+      mao_obra: v.mao_obra ?? "",
+      servico: v.servico ?? "",
+      status: v.status ?? "Pendente",
+    });
+    setShowForm(true);
+  }
 
-    // nome único
-    const ext = foto.name.split(".").pop() || "jpg";
-    const filePath = `registros/${Date.now()}-${Math.random()
-      .toString(16)
-      .slice(2)}.${ext}`;
-
-    const { error } = await supabase.storage
-      .from("verificacoes")
-      .upload(filePath, foto, { upsert: false });
-
-    if (error) {
-      alert("Erro ao enviar foto: " + error.message);
-      return null;
-    }
-
-    const { data } = supabase.storage.from("verificacoes").getPublicUrl(filePath);
-    return data.publicUrl || null;
+  function fecharForm() {
+    setErro(null); // ✅ limpa ao fechar
+    setShowForm(false);
   }
 
   async function salvar() {
-    if (!obra || !pavimento || !apartamento || !local || !maoDeObra) {
-      alert("Preencha todos os campos.");
+    setSalvando(true);
+    setErro(null);
+
+    const payload = {
+      obra: form.obra || null,
+      pavimento: form.pavimento || null,
+      apartamento: form.apartamento || null,
+      local: form.local || null,
+      mao_obra: form.mao_obra || null,
+      servico: form.servico || null,
+      status: form.status || "Pendente",
+    };
+
+    if (!payload.servico) {
+      setErro("Selecione um serviço.");
+      setSalvando(false);
       return;
     }
 
-    setLoading(true);
+    let res;
+    if (editId) {
+      res = await supabase.from(TABLE_NAME).update(payload).eq("id", editId);
+    } else {
+      res = await supabase.from(TABLE_NAME).insert([payload]);
+    }
 
-    const foto_url = await uploadFotoSeTiver();
-
-    const { error } = await supabase.from("registros").insert([
-      {
-        obra,
-        pavimento,
-        apartamento,
-        local,
-        mao_de_obra: maoDeObra,
-        status,
-        foto_url
-      }
-    ]);
-
-    setLoading(false);
-
-    if (error) {
-      alert("Erro ao salvar: " + error.message);
+    if (res.error) {
+      setErro(friendlyError(res.error.message));
+      setSalvando(false);
       return;
     }
 
-    setObra("");
-    setPavimento("");
-    setApartamento("");
-    setLocal("");
-    setMaoDeObra("");
-    setStatus("Pendente");
-    setFoto(null);
-
-    carregar();
+    await carregar();
+    setSalvando(false);
+    setShowForm(false);
   }
 
   return (
-    <div className="page">
-      <header className="topbar">
-        <div>
-          <div className="title">Verificação</div>
-          <div className="subtitle">Serviços</div>
+    <div className="app">
+      {/* TOP CHIPS */}
+      {!showForm && (
+        <div className="top">
+          <div className="chips">
+            <button
+              className={`chip ${servicoFiltro === "Todos" ? "active" : ""}`}
+              onClick={() => setServicoFiltro("Todos")}
+            >
+              Todos
+            </button>
+
+            {SERVICOS.map((s) => (
+              <button
+                key={s}
+                className={`chip ${servicoFiltro === s ? "active" : ""}`}
+                onClick={() => setServicoFiltro(s)}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="icon">🏆</div>
-      </header>
+      )}
 
-      <div className="card formcard">
-        <div className="cardtitle">Nova verificação</div>
-
-        <label className="label">Obra</label>
-        <input className="input" value={obra} onChange={e => setObra(e.target.value)} />
-
-        <label className="label">Pavimento</label>
-        <input className="input" value={pavimento} onChange={e => setPavimento(e.target.value)} />
-
-        <label className="label">Apartamento</label>
-        <input className="input" value={apartamento} onChange={e => setApartamento(e.target.value)} />
-
-        <label className="label">Local do serviço</label>
-        <input className="input" value={local} onChange={e => setLocal(e.target.value)} />
-
-        <label className="label">Mão de obra</label>
-        <input className="input" value={maoDeObra} onChange={e => setMaoDeObra(e.target.value)} />
-
-        <label className="label">Status</label>
-        <select className="select" value={status} onChange={e => setStatus(e.target.value as Status)}>
-          <option value="Pendente">Pendente</option>
-          <option value="OK">OK</option>
-          <option value="Red">Red</option>
-        </select>
-
-        <label className="label">Foto</label>
-        <input
-          className="file"
-          type="file"
-          accept="image/*"
-          onChange={e => setFoto(e.target.files?.[0] || null)}
-        />
-
-        {previewUrl ? (
-          <div className="previewWrap">
-            <img className="preview" src={previewUrl} alt="Prévia" />
+      {/* LISTA */}
+      {!showForm && (
+        <div className="content">
+          <div className="headerRow">
+            <h1 className="title">Verificações</h1>
+            <button className="btn" onClick={carregar} disabled={loading}>
+              Atualizar
+            </button>
           </div>
-        ) : null}
 
-        <button className="btn" onClick={salvar} disabled={loading}>
-          {loading ? "Salvando..." : "Salvar"}
-        </button>
-      </div>
+          {erro && <div className="error">{erro}</div>}
 
-      <div className="list">
-        {registros.map(r => (
-          <div key={r.id} className="card">
-            <div className="cardTop">
-              <div className="small">PEGE</div>
-              <span className={badgeClass(r.status)}>{r.status}</span>
+          {loading ? (
+            <div className="muted">Carregando…</div>
+          ) : listaFiltrada.length === 0 ? (
+            <div className="muted">Nenhuma verificação ainda.</div>
+          ) : (
+            <div className="cards">
+              {listaFiltrada.map((v) => (
+                <button
+                  key={v.id}
+                  className="card"
+                  onClick={() => abrirEditar(v)}
+                >
+                  <div className="cardTop">
+                    <div className="badge">{v.servico ?? "Sem serviço"}</div>
+                    <div className={`status ${v.status === "Concluído" ? "ok" : "pend"}`}>
+                      {v.status ?? "Pendente"}
+                    </div>
+                  </div>
+
+                  <div className="cardLine">
+                    <span className="label">Obra</span>
+                    <span className="value">{v.obra ?? "-"}</span>
+                  </div>
+
+                  <div className="grid2">
+                    <div className="cardLine">
+                      <span className="label">Pavimento</span>
+                      <span className="value">{v.pavimento ?? "-"}</span>
+                    </div>
+                    <div className="cardLine">
+                      <span className="label">Apartamento</span>
+                      <span className="value">{v.apartamento ?? "-"}</span>
+                    </div>
+                  </div>
+
+                  <div className="cardLine">
+                    <span className="label">Local</span>
+                    <span className="value">{v.local ?? "-"}</span>
+                  </div>
+
+                  <div className="cardLine">
+                    <span className="label">Mão de obra</span>
+                    <span className="value">{v.mao_obra ?? "-"}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* FAB */}
+          <button className="fab" onClick={abrirNovo} aria-label="Nova verificação">
+            +
+          </button>
+        </div>
+      )}
+
+      {/* FORM (MODAL FULL SCREEN) */}
+      {showForm && (
+        <div className="modalBackdrop">
+          <div className="modal">
+            <div className="modalHeader">
+              <h2 className="modalTitle">
+                {editId ? "Editar Verificação" : "Nova Verificação"}
+              </h2>
+              <button className="iconBtn" onClick={fecharForm} aria-label="Fechar">
+                ✕
+              </button>
             </div>
 
-            <div className="big">{r.obra}</div>
+            {erro && <div className="error">{erro}</div>}
 
-            <div className="meta">
-              <div><b>Pavimento:</b> {r.pavimento}</div>
-              <div><b>Apartamento:</b> {r.apartamento}</div>
-              <div><b>Local:</b> {r.local}</div>
-              <div><b>Mão de obra:</b> {r.mao_de_obra}</div>
-            </div>
-
-            {r.foto_url ? (
-              <div className="photoWrap">
-                <img className="photo" src={r.foto_url} alt="Foto do registro" />
+            <div className="formGrid">
+              <div className="field">
+                <label>Obra</label>
+                <input
+                  value={form.obra}
+                  onChange={(e) => setForm({ ...form, obra: e.target.value })}
+                />
               </div>
-            ) : null}
+
+              <div className="field">
+                <label>Pavimento</label>
+                <input
+                  value={form.pavimento}
+                  onChange={(e) => setForm({ ...form, pavimento: e.target.value })}
+                />
+              </div>
+
+              <div className="field">
+                <label>Apartamento</label>
+                <input
+                  value={form.apartamento}
+                  onChange={(e) => setForm({ ...form, apartamento: e.target.value })}
+                />
+              </div>
+
+              <div className="field">
+                <label>Local do serviço</label>
+                <input
+                  value={form.local}
+                  onChange={(e) => setForm({ ...form, local: e.target.value })}
+                />
+              </div>
+
+              <div className="field">
+                <label>Mão de obra</label>
+                <input
+                  value={form.mao_obra}
+                  onChange={(e) => setForm({ ...form, mao_obra: e.target.value })}
+                />
+              </div>
+
+              <div className="field">
+                <label>Serviço</label>
+                <select
+                  value={form.servico}
+                  onChange={(e) => setForm({ ...form, servico: e.target.value })}
+                >
+                  <option value="">Selecione</option>
+                  {SERVICOS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="field">
+                <label>Status</label>
+                <select
+                  value={form.status}
+                  onChange={(e) => setForm({ ...form, status: e.target.value })}
+                >
+                  {STATUS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="actions">
+              <button className="primary" onClick={salvar} disabled={salvando}>
+                {salvando ? "Salvando..." : "Salvar"}
+              </button>
+
+              <button className="secondary" onClick={fecharForm} disabled={salvando}>
+                Voltar
+              </button>
+            </div>
           </div>
-        ))}
-      </div>
-
-      <style>{`
-        * { 
-          box-sizing: border-box; 
-          font-family: Arial, sans-serif;
-        }
-        
-        body { 
-          margin: 0; 
-          font-family: Arial, sans-serif;
-        }
-
-        .page{
-          max-width: 420px;
-          margin: 0 auto;
-          padding: 18px;
-          font-family: Arial, sans-serif;
-          background: #f6f7fb;
-          min-height: 100vh;
-        }
-
-        .topbar{
-          display:flex;
-          justify-content: space-between;
-          align-items:center;
-          padding: 14px 14px;
-          background: #ffffff;
-          border-radius: 14px;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-          margin-bottom: 14px;
-        }
-
-        .title{
-          font-size: 28px;
-          font-weight: 800;
-          letter-spacing: -0.5px;
-          color: #1f2937;
-        }
-        .subtitle{
-          margin-top: 2px;
-          font-size: 13px;
-          color: #6b7280;
-          font-weight: 600;
-        }
-        .icon{
-          font-size: 22px;
-          opacity: 0.9;
-        }
-
-        .card{
-          background:#fff;
-          border-radius: 16px;
-          padding: 14px;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-          margin-bottom: 12px;
-        }
-
-        .formcard .cardtitle{
-          font-size: 18px;
-          font-weight: 800;
-          margin-bottom: 10px;
-          color:#111827;
-        }
-
-        .label{
-          display:block;
-          font-size: 12px;
-          font-weight: 800;
-          color: #374151;
-          margin: 10px 0 6px;
-        }
-
-        .input, .select, .file{
-          width:100%;
-          padding: 12px 12px;
-          border: 1px solid #e5e7eb;
-          border-radius: 12px;
-          font-size: 14px;
-          outline: none;
-          background: #fff;
-        }
-
-        /* arruma o select pra não ficar “feio/zoado” */
-        .select{
-          appearance: none;
-          background-image: linear-gradient(45deg, transparent 50%, #6b7280 50%),
-                            linear-gradient(135deg, #6b7280 50%, transparent 50%);
-          background-position: calc(100% - 18px) calc(50% - 2px),
-                              calc(100% - 12px) calc(50% - 2px);
-          background-size: 6px 6px, 6px 6px;
-          background-repeat: no-repeat;
-        }
-
-        .btn{
-          width:100%;
-          margin-top: 14px;
-          padding: 12px;
-          border: none;
-          border-radius: 12px;
-          background: #2563eb;
-          color: #fff;
-          font-weight: 800;
-          font-size: 14px;
-        }
-        .btn:disabled{
-          opacity: 0.7;
-        }
-
-        .previewWrap{
-          margin-top: 10px;
-          border-radius: 12px;
-          overflow: hidden;
-          border: 1px solid #e5e7eb;
-        }
-        .preview{
-          width: 100%;
-          display:block;
-        }
-
-        .cardTop{
-          display:flex;
-          justify-content: space-between;
-          align-items:center;
-          margin-bottom: 8px;
-        }
-
-        .small{
-          font-size: 12px;
-          color:#6b7280;
-          font-weight: 800;
-          letter-spacing: 1px;
-        }
-
-        .badge{
-          padding: 6px 10px;
-          border-radius: 999px;
-          font-size: 12px;
-          font-weight: 800;
-        }
-        .pendente{ background:#fff3cd; color:#b45309; }
-        .ok{ background:#dcfce7; color:#15803d; }
-        .red{ background:#fee2e2; color:#b91c1c; }
-
-        .big{
-          font-size: 16px;
-          font-weight: 900;
-          color:#111827;
-          margin-bottom: 8px;
-        }
-
-        .meta{
-          font-size: 13px;
-          color:#374151;
-          line-height: 1.4;
-        }
-
-        .photoWrap{
-          margin-top: 10px;
-          border-radius: 12px;
-          overflow: hidden;
-          border: 1px solid #e5e7eb;
-        }
-        .photo{
-          width: 100%;
-          display:block;
-        }
-      `}</style>
+        </div>
+      )}
     </div>
   );
 }
